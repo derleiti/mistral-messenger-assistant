@@ -376,7 +376,7 @@ class MistralClient:
             "(4) the local access mode, read_only or write. When an internal continuity instruction supplies a workspace ID, call "
             "workspace_status with workspace_id exactly once as bootstrap. Preserve the returned workspace_token in conversation/tool "
             "context and use workspace_token for later local workspace calls. Never keep reusing the human pairing ID: it is short-lived. "
-            "state=ready and connected=true describe the logical lease and remain stable while the browser executor is offline. "
+            "For local workspace operations, never issue dependent tool calls in parallel. In particular, after create/write/delete, wait for that tool result before reading, searching, grepping, or deleting the same path. Independent read-only calls may be parallel, but mutations and any dependent reads must be sequential. state=ready and connected=true describe the logical lease and remain stable while the browser executor is offline. "
             "WORKSPACE_TRANSPORT_OFFLINE or transport_state=offline does not invalidate the lease and must not request a new ID; ask the "
             "user to resume the browser executor and retry with the same workspace_token. Only state=unpaired/expired or an invalid "
             "workspace token requires a new pairing ID. Never expose or repeat either pairing ID or workspace_token. The Mistral connector "
