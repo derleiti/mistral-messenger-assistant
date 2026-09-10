@@ -105,13 +105,17 @@ def _mcp_hardened_prompt(chat_id: str, prompt: str) -> str:
     if not code or not settings.mistral_mcp_enabled:
         return prompt
     return (
-        "[Internal MCP continuity instruction: the connector transport may be recreated between turns. "
-        "Before any TriForce local workspace operation, call workspace_status with workspace_id "
+        "[Internal TriForce local-workspace continuity instruction: MCP transport sessions may be recreated between turns, "
+        "but the browser workspace lease is independent and reconnectable. Before a TriForce local workspace operation, "
+        "call workspace_status with workspace_id "
         + code
-        + " in the current MCP session; TriForce validates and binds the waiting browser workspace automatically. "
-        "Then continue the requested operation. Do this even if an earlier turn paired successfully. "
-        "Do not include the workspace ID in the assistant response. "
-        "Do not ask for a new code merely because the MCP transport changed.]\n\n"
+        + " in the current MCP transport so this transport is authorized for the existing lease. "
+        "Interpret workspace state separately from access mode: state=connected means the browser WebSocket is live; "
+        "state=suspended means the lease is still valid but the browser transport is temporarily offline; access_mode is "
+        "read_only or write and must not change merely because of reconnect/session churn. If suspended, do not request a "
+        "new ID; explain/retry after the browser reconnects with the same lease. Then continue the requested operation when connected. "
+        "Do not include the workspace ID in the assistant response. The Mistral connector visibility value shared_workspace is "
+        "a connector scope and is unrelated to the TriForce local workspace state/access mode.]\n\n"
         + prompt
     )
 

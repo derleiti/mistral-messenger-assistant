@@ -88,6 +88,9 @@ def test_workspace_pair_is_rebound_for_followup_turns(monkeypatch):
     assert "workspace_id" in first
     assert code in second
     assert "workspace_status" in second
+    assert "state=suspended" in second
+    assert "access_mode" in second
+    assert "shared_workspace" in second
     assert second.endswith("zeige die dateien")
 
 
