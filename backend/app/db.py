@@ -53,6 +53,14 @@ class Database:
                     conversation_id TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS workspace_leases (
+                    chat_id TEXT PRIMARY KEY,
+                    workspace_token TEXT NOT NULL,
+                    lease_id TEXT NOT NULL,
+                    access_mode TEXT NOT NULL,
+                    capabilities_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             # Known v0.2 routing tables are obsolete in the standalone Mistral architecture.
@@ -179,3 +187,34 @@ class Database:
         with self.connect() as con:
             row = con.execute("SELECT COUNT(*) AS n FROM mistral_conversations").fetchone()
             return int(row["n"])
+    def set_workspace_lease(self, chat_id: str, workspace_token: str, lease_id: str, access_mode: str, capabilities: list[str] | tuple[str, ...]):
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO workspace_leases(chat_id,workspace_token,lease_id,access_mode,capabilities_json,updated_at) VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET workspace_token=excluded.workspace_token,lease_id=excluded.lease_id,access_mode=excluded.access_mode,capabilities_json=excluded.capabilities_json,updated_at=excluded.updated_at",
+                (str(chat_id), str(workspace_token), str(lease_id), str(access_mode), json.dumps(list(capabilities)), int(time.time())),
+            )
+
+    def get_workspace_lease(self, chat_id: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT workspace_token,lease_id,access_mode,capabilities_json,updated_at FROM workspace_leases WHERE chat_id=?",
+                (str(chat_id),),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            caps = json.loads(row["capabilities_json"])
+        except Exception:
+            caps = []
+        return {
+            "workspace_token": row["workspace_token"],
+            "lease_id": row["lease_id"],
+            "access_mode": row["access_mode"],
+            "capabilities": caps if isinstance(caps, list) else [],
+            "updated_at": row["updated_at"],
+        }
+
+    def clear_workspace_lease(self, chat_id: str):
+        with self.connect() as con:
+            con.execute("DELETE FROM workspace_leases WHERE chat_id=?", (str(chat_id),))

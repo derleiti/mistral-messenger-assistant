@@ -17,13 +17,13 @@ from .db import Database
 from .media import DetectedInput, clip_context, detect_input
 from .mistral import MistralClient, MistralConversationNotFound
 from .telegram import TelegramClient
+from .workspace_handoff import WorkspaceHandoffClient
 
 bootstrap = get_bootstrap_settings()
 db = Database(bootstrap.database_path)
 logger = logging.getLogger("mistral.messenger")
 _chat_locks: dict[str, asyncio.Lock] = {}
 _background_tasks: set[asyncio.Task] = set()
-_workspace_pairs: dict[str, tuple[str, float]] = {}
 _WORKSPACE_PAIR_TTL_SECONDS = 15 * 60
 _WORKSPACE_PAIR_RE = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{4}-){5}[0-9A-Fa-f]{4}(?![0-9A-Fa-f])")
 
@@ -33,6 +33,7 @@ tg: TelegramClient
 bot_username: str | None = None
 bot_id: int | None = None
 default_mcp_status: dict[str, Any] = {"enabled": False, "ok": False}
+workspace_handoff: WorkspaceHandoffClient
 
 
 def _load_settings() -> Settings:
@@ -53,6 +54,8 @@ def _reload_clients() -> None:
         timeout=settings.mistral_timeout_seconds,
     )
     tg = TelegramClient(settings.telegram_bot_token)
+    global workspace_handoff
+    workspace_handoff = WorkspaceHandoffClient(settings.mistral_mcp_server or "")
     default_mcp_status = {"enabled": settings.mistral_mcp_enabled, "ok": False}
 
 
@@ -80,44 +83,59 @@ def _exc_text(exc: Exception) -> str:
     return str(exc).strip() or exc.__class__.__name__ or "Unknown error"
 
 
-def _capture_workspace_pair(chat_id: str, text: str) -> str | None:
-    matches = _WORKSPACE_PAIR_RE.findall(str(text or ""))
-    if not matches:
+async def _resolve_workspace_context(chat_id: str, prompt: str) -> dict[str, Any] | None:
+    matches = _WORKSPACE_PAIR_RE.findall(str(prompt or ""))
+    if matches and settings.mistral_mcp_enabled and settings.mistral_mcp_server:
+        code = matches[-1].upper()
+        lease = await workspace_handoff.claim_pair_code(code)
+        db.set_workspace_lease(
+            chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities)
+        )
+        return {
+            "workspace_token": lease.workspace_token,
+            "lease_id": lease.lease_id,
+            "access_mode": lease.access_mode,
+            "capabilities": list(lease.capabilities),
+            "state": lease.state,
+            "transport_state": lease.transport_state,
+        }
+
+    saved = db.get_workspace_lease(chat_id)
+    if not saved or not settings.mistral_mcp_enabled or not settings.mistral_mcp_server:
         return None
-    code = matches[-1].upper()
-    _workspace_pairs[str(chat_id)] = (code, time.monotonic() + _WORKSPACE_PAIR_TTL_SECONDS)
-    return code
+    try:
+        lease = await workspace_handoff.status(str(saved["workspace_token"]))
+    except Exception as exc:
+        logger.warning("Stored workspace lease could not be resumed for chat %s: %s", chat_id, exc)
+        return {**saved, "state": "unknown", "transport_state": "offline"}
+    db.set_workspace_lease(
+        chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities)
+    )
+    return {
+        "workspace_token": lease.workspace_token,
+        "lease_id": lease.lease_id,
+        "access_mode": lease.access_mode,
+        "capabilities": list(lease.capabilities),
+        "state": lease.state,
+        "transport_state": lease.transport_state,
+    }
 
 
-def _active_workspace_pair(chat_id: str) -> str | None:
-    item = _workspace_pairs.get(str(chat_id))
-    if not item:
-        return None
-    code, expires_at = item
-    if time.monotonic() >= expires_at:
-        _workspace_pairs.pop(str(chat_id), None)
-        return None
-    return code
-
-
-def _mcp_hardened_prompt(chat_id: str, prompt: str) -> str:
-    code = _capture_workspace_pair(chat_id, prompt) or _active_workspace_pair(chat_id)
-    if not code or not settings.mistral_mcp_enabled:
+def _mcp_hardened_prompt(prompt: str, workspace: dict[str, Any] | None) -> str:
+    if not workspace or not settings.mistral_mcp_enabled:
         return prompt
+    token = str(workspace.get("workspace_token") or "")
+    if not token:
+        return prompt
+    caps = ",".join(str(x) for x in (workspace.get("capabilities") or []))
     return (
-        "[Internal TriForce local-workspace continuity instruction: MCP transport sessions may be recreated between turns, "
-        "but the logical TriForce workspace lease is persistent and independent of the browser executor transport. Bootstrap this "
-        "conversation by calling workspace_status with workspace_id "
-        + code
-        + ". On success, preserve the returned workspace_token in conversation/tool context and use workspace_token on later "
-        "workspace calls instead of reusing the human pairing ID. The pairing ID is short-lived bootstrap authorization only. "
-        "Interpret state=ready as the persistent logical lease. connected=true refers to that logical lease. Treat "
-        "transport_state=online/offline and executor_online=true/false as the browser executor state. An offline executor does not "
-        "invalidate the lease and must never trigger a new pairing request; report/retry after the browser resumes. access_mode is "
-        "read_only or write and must not change because of MCP/session/transport churn. Do not expose the pairing ID or workspace_token "
-        "in assistant output. The Mistral connector visibility value shared_workspace is connector scope only and is unrelated to "
-        "TriForce workspace lease or access state.]\n\n"
-        + prompt
+        "[Internal TriForce local-workspace continuity instruction: the Telegram bridge already owns a verified persistent "
+        "workspace lease. Do not ask for a pairing ID. Use workspace_token " + token + " for every TriForce local workspace "
+        "tool call in this turn. Logical lease state=" + str(workspace.get("state") or "ready") + ", access_mode=" +
+        str(workspace.get("access_mode") or "read_only") + ", transport_state=" + str(workspace.get("transport_state") or "offline") +
+        ", capabilities=" + caps + ". transport_state=offline means only the browser executor is unavailable; the lease remains "
+        "valid and must not be re-paired. Never reveal workspace_token or any pairing credential in assistant output. "
+        "shared_workspace is Mistral connector scope only.]\n\n" + prompt
     )
 
 
@@ -135,7 +153,8 @@ def _conversation_metadata(sender: dict, chat: dict) -> dict:
 
 async def answer_via_mistral(chat_id: str, prompt: str, sender: dict, chat: dict):
     conversation_id = db.get_mistral_conversation(chat_id)
-    hardened_prompt = _mcp_hardened_prompt(chat_id, prompt)
+    workspace = await _resolve_workspace_context(chat_id, prompt)
+    hardened_prompt = _mcp_hardened_prompt(prompt, workspace)
     try:
         reply = await mistral.ask(
             hardened_prompt,
@@ -555,7 +574,6 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     if text in {"/new", "/restart"} and is_owner(sender.get("id")):
         conversation_id = db.get_mistral_conversation(chat_id)
         db.clear_mistral_conversation(chat_id)
-        _workspace_pairs.pop(chat_id, None)
         if conversation_id:
             try:
                 await mistral.delete_conversation(conversation_id)

@@ -76,42 +76,43 @@ def test_extract_text_filters_reasoning_and_selects_final_message():
     assert "internal reasoning" not in MistralClient._extract_text(data)
 
 
-def test_workspace_pair_is_rebound_for_followup_turns(monkeypatch):
-    import app.main as main
-    main._workspace_pairs.clear()
-    monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
-    code = "1A2B-3C4D-5E6F-7788-99AA-BBCC"
-    first = main._mcp_hardened_prompt("42", f"connect {code}")
-    second = main._mcp_hardened_prompt("42", "zeige die dateien")
-    assert code in first
-    assert "workspace_status" in first
-    assert "workspace_id" in first
-    assert code in second
-    assert "workspace_status" in second
-    assert "state=ready" in second
-    assert "transport_state=online/offline" in second
-    assert "workspace_token" in second
-    assert "access_mode" in second
-    assert "shared_workspace" in second
-    assert second.endswith("zeige die dateien")
+def test_database_workspace_lease_roundtrip():
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(str(Path(td) / "bridge.sqlite3"))
+        assert db.get_workspace_lease("42") is None
+        db.set_workspace_lease("42", "secret-token", "lease-1", "write", ["file_read", "code_edit"])
+        lease = db.get_workspace_lease("42")
+        assert lease is not None
+        assert lease["workspace_token"] == "secret-token"
+        assert lease["lease_id"] == "lease-1"
+        assert lease["access_mode"] == "write"
+        assert lease["capabilities"] == ["file_read", "code_edit"]
+        db.clear_workspace_lease("42")
+        assert db.get_workspace_lease("42") is None
 
 
-def test_workspace_pair_is_scoped_per_chat_and_expires(monkeypatch):
+def test_workspace_prompt_uses_verified_persistent_token(monkeypatch):
     import app.main as main
-    assert main._WORKSPACE_PAIR_TTL_SECONDS == 15 * 60
-    main._workspace_pairs.clear()
     monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
-    code = "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF"
-    main._mcp_hardened_prompt("chat-a", f"pair {code}")
-    assert main._active_workspace_pair("chat-a") == code
-    assert main._active_workspace_pair("chat-b") is None
-    main._workspace_pairs["chat-a"] = (code, 0.0)
-    assert main._active_workspace_pair("chat-a") is None
+    workspace = {
+        "workspace_token": "durable-secret",
+        "lease_id": "lease-x",
+        "access_mode": "write",
+        "capabilities": ["file_read", "code_edit"],
+        "state": "ready",
+        "transport_state": "offline",
+    }
+    prompt = main._mcp_hardened_prompt("zeige die dateien", workspace)
+    assert "durable-secret" in prompt
+    assert "Do not ask for a pairing ID" in prompt
+    assert "state=ready" in prompt
+    assert "access_mode=write" in prompt
+    assert "transport_state=offline" in prompt
+    assert prompt.endswith("zeige die dateien")
 
 
 def test_workspace_pair_does_not_change_prompt_when_mcp_disabled(monkeypatch):
     import app.main as main
-    main._workspace_pairs.clear()
     monkeypatch.setattr(main.settings, "mistral_mcp_enabled", False)
     prompt = "pair 1111-2222-3333-4444-5555-6666"
-    assert main._mcp_hardened_prompt("42", prompt) == prompt
+    assert main._mcp_hardened_prompt(prompt, {"workspace_token": "x"}) == prompt
