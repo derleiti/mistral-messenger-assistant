@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -22,6 +23,9 @@ db = Database(bootstrap.database_path)
 logger = logging.getLogger("mistral.messenger")
 _chat_locks: dict[str, asyncio.Lock] = {}
 _background_tasks: set[asyncio.Task] = set()
+_workspace_pairs: dict[str, tuple[str, float]] = {}
+_WORKSPACE_PAIR_TTL_SECONDS = 2 * 60 * 60
+_WORKSPACE_PAIR_RE = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{4}-){5}[0-9A-Fa-f]{4}(?![0-9A-Fa-f])")
 
 settings: Settings
 mistral: MistralClient
@@ -76,6 +80,41 @@ def _exc_text(exc: Exception) -> str:
     return str(exc).strip() or exc.__class__.__name__ or "Unknown error"
 
 
+def _capture_workspace_pair(chat_id: str, text: str) -> str | None:
+    matches = _WORKSPACE_PAIR_RE.findall(str(text or ""))
+    if not matches:
+        return None
+    code = matches[-1].upper()
+    _workspace_pairs[str(chat_id)] = (code, time.monotonic() + _WORKSPACE_PAIR_TTL_SECONDS)
+    return code
+
+
+def _active_workspace_pair(chat_id: str) -> str | None:
+    item = _workspace_pairs.get(str(chat_id))
+    if not item:
+        return None
+    code, expires_at = item
+    if time.monotonic() >= expires_at:
+        _workspace_pairs.pop(str(chat_id), None)
+        return None
+    return code
+
+
+def _mcp_hardened_prompt(chat_id: str, prompt: str) -> str:
+    code = _capture_workspace_pair(chat_id, prompt) or _active_workspace_pair(chat_id)
+    if not code or not settings.mistral_mcp_enabled:
+        return prompt
+    return (
+        "[Internal MCP continuity instruction: the connector transport may be recreated between turns. "
+        "Before any TriForce local workspace operation, call workspace_pair with pairing code "
+        + code
+        + " in the current MCP session, then call workspace_status and continue the requested operation. "
+        "Do this even if an earlier turn paired successfully. Do not include the pairing code in the assistant response. "
+        "Do not ask for a new code merely because the MCP transport changed.]\n\n"
+        + prompt
+    )
+
+
 def _conversation_metadata(sender: dict, chat: dict) -> dict:
     metadata = {
         "source": "telegram",
@@ -90,15 +129,16 @@ def _conversation_metadata(sender: dict, chat: dict) -> dict:
 
 async def answer_via_mistral(chat_id: str, prompt: str, sender: dict, chat: dict):
     conversation_id = db.get_mistral_conversation(chat_id)
+    hardened_prompt = _mcp_hardened_prompt(chat_id, prompt)
     try:
         reply = await mistral.ask(
-            prompt,
+            hardened_prompt,
             conversation_id=conversation_id,
             metadata=None if conversation_id else _conversation_metadata(sender, chat),
         )
     except MistralConversationNotFound:
         db.clear_mistral_conversation(chat_id)
-        reply = await mistral.ask(prompt, metadata=_conversation_metadata(sender, chat))
+        reply = await mistral.ask(hardened_prompt, metadata=_conversation_metadata(sender, chat))
     db.set_mistral_conversation(chat_id, reply.conversation_id)
     return reply
 
@@ -509,6 +549,7 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     if text in {"/new", "/restart"} and is_owner(sender.get("id")):
         conversation_id = db.get_mistral_conversation(chat_id)
         db.clear_mistral_conversation(chat_id)
+        _workspace_pairs.pop(chat_id, None)
         if conversation_id:
             try:
                 await mistral.delete_conversation(conversation_id)

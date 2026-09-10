@@ -371,9 +371,13 @@ class MistralClient:
         )
         connector_prompt = (
             "Use this connector for AILinux, TriForce, coding and local workspace tasks. "
-            "For local files, first use workspace_status. If no workspace is paired, explain that the user "
-            "must open https://api.ailinux.me/v1/mcp in a browser, choose a folder, and provide the pairing ID; "
-            "then use workspace_pair. Never claim local file access before pairing succeeds."
+            "MCP transport sessions may be short-lived and recreated between turns. A browser pairing ID "
+            "represents a longer-lived TriForce workspace lease, not one transport session. When an internal "
+            "continuity instruction supplies a pairing ID, call workspace_pair with it in the current MCP session "
+            "before local workspace tools, then call workspace_status and continue. Do this even if an earlier "
+            "turn paired successfully. Never expose or repeat the pairing ID in the assistant response and do not "
+            "ask for a new ID merely because the transport changed. Without an active ID, explain that the user "
+            "must open https://api.ailinux.me/v1/mcp, choose a folder, connect it, and provide the pairing ID."
         )
 
         if connector is None:

@@ -74,3 +74,37 @@ def test_extract_text_filters_reasoning_and_selects_final_message():
     }
     assert MistralClient._extract_text(data) == "final answer"
     assert "internal reasoning" not in MistralClient._extract_text(data)
+
+
+def test_workspace_pair_is_rebound_for_followup_turns(monkeypatch):
+    import app.main as main
+    main._workspace_pairs.clear()
+    monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
+    code = "1A2B-3C4D-5E6F-7788-99AA-BBCC"
+    first = main._mcp_hardened_prompt("42", f"connect {code}")
+    second = main._mcp_hardened_prompt("42", "zeige die dateien")
+    assert code in first
+    assert "workspace_pair" in first
+    assert code in second
+    assert "workspace_pair" in second
+    assert second.endswith("zeige die dateien")
+
+
+def test_workspace_pair_is_scoped_per_chat_and_expires(monkeypatch):
+    import app.main as main
+    main._workspace_pairs.clear()
+    monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
+    code = "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF"
+    main._mcp_hardened_prompt("chat-a", f"pair {code}")
+    assert main._active_workspace_pair("chat-a") == code
+    assert main._active_workspace_pair("chat-b") is None
+    main._workspace_pairs["chat-a"] = (code, 0.0)
+    assert main._active_workspace_pair("chat-a") is None
+
+
+def test_workspace_pair_does_not_change_prompt_when_mcp_disabled(monkeypatch):
+    import app.main as main
+    main._workspace_pairs.clear()
+    monkeypatch.setattr(main.settings, "mistral_mcp_enabled", False)
+    prompt = "pair 1111-2222-3333-4444-5555-6666"
+    assert main._mcp_hardened_prompt("42", prompt) == prompt
