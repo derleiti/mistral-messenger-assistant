@@ -114,7 +114,9 @@ def _media_followup(detected: DetectedInput, extracted: str) -> str:
     return (
         f"The user sent the Telegram attachment {detected.file_name or 'attachment'!r}.\n"
         f"User instruction: {detected.prompt}\n\n{label}:\n{context}\n\n"
-        "Answer the original user instruction. Treat the supplied analysis as file context and do not invent details."
+        "Answer the original user instruction once, in natural conversational text unless the user explicitly requests "
+        "a structured format. Treat the supplied analysis as internal file context, do not echo preprocessing metadata, "
+        "and do not invent details."
     )
 
 
@@ -129,7 +131,18 @@ async def _answer_detected_input(detected: DetectedInput, chat_id: str, sender: 
         )
     file_bytes, _ = await tg.download_file(detected.file_id, settings.telegram_max_download_bytes)
     if detected.kind == "image":
-        extracted = await mistral.vision(file_bytes, detected.mime_type or "image/jpeg", detected.prompt, settings.mistral_vision_model)
+        vision_prompt = (
+            "Analyze the image as internal context for another assistant. Describe only what is visibly supported. "
+            "Be concise but preserve details relevant to the user's request. Use plain text, not JSON or XML. "
+            "Do not include meta-commentary, alternative drafts, hidden reasoning, or phrases about producing a final answer. "
+            f"The user's request about the image is: {detected.prompt}"
+        )
+        extracted = await mistral.vision(
+            file_bytes,
+            detected.mime_type or "image/jpeg",
+            vision_prompt,
+            settings.mistral_vision_model,
+        )
     elif detected.kind == "document":
         extracted = await mistral.ocr(file_bytes, detected.file_name or "document", detected.mime_type or "application/octet-stream", settings.mistral_ocr_model)
     elif detected.kind == "text_file":
@@ -295,7 +308,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Mistral Messenger Assistant", version="1.0.0-beta1", lifespan=lifespan)
+app = FastAPI(title="Mistral Messenger Assistant", version="1.0.0-beta2", lifespan=lifespan)
 
 
 @app.get("/", response_class=HTMLResponse)
