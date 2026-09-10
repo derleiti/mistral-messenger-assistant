@@ -89,7 +89,7 @@ async def _resolve_workspace_context(chat_id: str, prompt: str) -> dict[str, Any
         code = matches[-1].upper()
         lease = await workspace_handoff.claim_pair_code(code)
         db.set_workspace_lease(
-            chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities)
+            chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities), lease.mcp_session_id
         )
         return {
             "workspace_token": lease.workspace_token,
@@ -104,12 +104,12 @@ async def _resolve_workspace_context(chat_id: str, prompt: str) -> dict[str, Any
     if not saved or not settings.mistral_mcp_enabled or not settings.mistral_mcp_server:
         return None
     try:
-        lease = await workspace_handoff.status(str(saved["workspace_token"]))
+        lease = await workspace_handoff.status(str(saved["workspace_token"]), str(saved.get("mcp_session_id") or ""))
     except Exception as exc:
         logger.warning("Stored workspace lease could not be resumed for chat %s: %s", chat_id, exc)
         return {**saved, "state": "unknown", "transport_state": "offline"}
     db.set_workspace_lease(
-        chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities)
+        chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities), lease.mcp_session_id
     )
     return {
         "workspace_token": lease.workspace_token,
@@ -364,13 +364,38 @@ body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:760px
 <script>async function go(){let out=document.getElementById('out');out.textContent='Configuring...';let body={mistral_api_key:mk.value,telegram_bot_token:tt.value,public_base_url:url.value,admin_token:adm.value,existing_agent_id:aid.value,create_agent:!aid.value,assistant_name:an.value,agent_name:an.value,agent_model:model.value,agent_instructions:instructions.value,agent_enable_web_search:web.checked,mistral_mcp_enabled:mcp.checked,mistral_mcp_server:mcpurl.value};let h={'Content-Type':'application/json'};if(adm.value)h.Authorization='Bearer '+adm.value;let r=await fetch('/setup/configure',{method:'POST',headers:h,body:JSON.stringify(body)});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 
 
+async def _workspace_keepalive_loop():
+    while True:
+        await asyncio.sleep(300)
+        for item in db.list_workspace_leases():
+            try:
+                lease = await workspace_handoff.status(
+                    str(item.get("workspace_token") or ""),
+                    str(item.get("mcp_session_id") or ""),
+                )
+                db.set_workspace_lease(
+                    str(item.get("chat_id") or ""), lease.workspace_token, lease.lease_id,
+                    lease.access_mode, list(lease.capabilities), lease.mcp_session_id,
+                )
+            except Exception as exc:
+                logger.warning("Workspace keepalive failed for chat %s: %s", item.get("chat_id"), exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         await _configure_integrations()
     except Exception as exc:
         logger.warning("Startup integration warning: %s", exc)
-    yield
+    keepalive_task = asyncio.create_task(_workspace_keepalive_loop())
+    try:
+        yield
+    finally:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except BaseException:
+            pass
 
 
 app = FastAPI(title="Mistral Messenger Assistant", version="1.0.0-beta2", lifespan=lifespan)

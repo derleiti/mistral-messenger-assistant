@@ -59,11 +59,16 @@ class Database:
                     lease_id TEXT NOT NULL,
                     access_mode TEXT NOT NULL,
                     capabilities_json TEXT NOT NULL,
+                    mcp_session_id TEXT NOT NULL DEFAULT '',
                     updated_at INTEGER NOT NULL
                 );
                 """
             )
-            # Known v0.2 routing tables are obsolete in the standalone Mistral architecture.
+            try:
+                con.execute("ALTER TABLE workspace_leases ADD COLUMN mcp_session_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+                        # Known v0.2 routing tables are obsolete in the standalone Mistral architecture.
             con.execute("DROP TABLE IF EXISTS chat_routes")
             con.execute("DROP TABLE IF EXISTS web_handoffs")
 
@@ -187,18 +192,18 @@ class Database:
         with self.connect() as con:
             row = con.execute("SELECT COUNT(*) AS n FROM mistral_conversations").fetchone()
             return int(row["n"])
-    def set_workspace_lease(self, chat_id: str, workspace_token: str, lease_id: str, access_mode: str, capabilities: list[str] | tuple[str, ...]):
+    def set_workspace_lease(self, chat_id: str, workspace_token: str, lease_id: str, access_mode: str, capabilities: list[str] | tuple[str, ...], mcp_session_id: str = ""):
         with self.connect() as con:
             con.execute(
-                "INSERT INTO workspace_leases(chat_id,workspace_token,lease_id,access_mode,capabilities_json,updated_at) VALUES(?,?,?,?,?,?) "
-                "ON CONFLICT(chat_id) DO UPDATE SET workspace_token=excluded.workspace_token,lease_id=excluded.lease_id,access_mode=excluded.access_mode,capabilities_json=excluded.capabilities_json,updated_at=excluded.updated_at",
-                (str(chat_id), str(workspace_token), str(lease_id), str(access_mode), json.dumps(list(capabilities)), int(time.time())),
+                "INSERT INTO workspace_leases(chat_id,workspace_token,lease_id,access_mode,capabilities_json,mcp_session_id,updated_at) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET workspace_token=excluded.workspace_token,lease_id=excluded.lease_id,access_mode=excluded.access_mode,capabilities_json=excluded.capabilities_json,mcp_session_id=excluded.mcp_session_id,updated_at=excluded.updated_at",
+                (str(chat_id), str(workspace_token), str(lease_id), str(access_mode), json.dumps(list(capabilities)), str(mcp_session_id), int(time.time())),
             )
 
     def get_workspace_lease(self, chat_id: str) -> dict[str, Any] | None:
         with self.connect() as con:
             row = con.execute(
-                "SELECT workspace_token,lease_id,access_mode,capabilities_json,updated_at FROM workspace_leases WHERE chat_id=?",
+                "SELECT workspace_token,lease_id,access_mode,capabilities_json,mcp_session_id,updated_at FROM workspace_leases WHERE chat_id=?",
                 (str(chat_id),),
             ).fetchone()
         if not row:
@@ -212,9 +217,22 @@ class Database:
             "lease_id": row["lease_id"],
             "access_mode": row["access_mode"],
             "capabilities": caps if isinstance(caps, list) else [],
+            "mcp_session_id": row["mcp_session_id"],
             "updated_at": row["updated_at"],
         }
 
     def clear_workspace_lease(self, chat_id: str):
         with self.connect() as con:
             con.execute("DELETE FROM workspace_leases WHERE chat_id=?", (str(chat_id),))
+
+    def list_workspace_leases(self) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("SELECT chat_id,workspace_token,lease_id,access_mode,capabilities_json,mcp_session_id,updated_at FROM workspace_leases").fetchall()
+        out = []
+        for row in rows:
+            try:
+                caps = json.loads(row["capabilities_json"])
+            except Exception:
+                caps = []
+            out.append({"chat_id": row["chat_id"], "workspace_token": row["workspace_token"], "lease_id": row["lease_id"], "access_mode": row["access_mode"], "capabilities": caps if isinstance(caps,list) else [], "mcp_session_id": row["mcp_session_id"], "updated_at": row["updated_at"]})
+        return out
