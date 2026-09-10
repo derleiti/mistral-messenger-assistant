@@ -446,7 +446,7 @@ class MistralClient:
                 },
             )
 
-        tools = await self._request("GET", f"/connectors/{connector_id}/tools")
+        tools = await self._request("GET", f"/connectors/{connector_id}/tools?refresh=true")
         if not isinstance(tools, list):
             raise RuntimeError("Mistral connector tool discovery returned an unexpected response")
 

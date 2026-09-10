@@ -116,3 +116,48 @@ def test_workspace_pair_does_not_change_prompt_when_mcp_disabled(monkeypatch):
     monkeypatch.setattr(main.settings, "mistral_mcp_enabled", False)
     prompt = "pair 1111-2222-3333-4444-5555-6666"
     assert main._mcp_hardened_prompt(prompt, {"workspace_token": "x"}) == prompt
+
+
+def test_ensure_default_mcp_refreshes_connector_tools():
+    class FakeConnectorMistral(MistralClient):
+        def __init__(self):
+            super().__init__("test-key", "agent-123", 0)
+            self.calls = []
+
+        async def _request(self, method, path, payload=None):
+            self.calls.append((method, path, payload))
+            if path == "/connectors?page_size=100":
+                return {"items": [{
+                    "id": "conn-1",
+                    "name": "ailinux",
+                    "server": "https://api.ailinux.me/v1/mcp",
+                    "description": "old",
+                }]}
+            if path == "/connectors/conn-1":
+                return {
+                    "id": "conn-1",
+                    "name": "ailinux",
+                    "server": "https://api.ailinux.me/v1/mcp",
+                    "description": payload.get("description", "") if payload else "",
+                }
+            if path in {
+                "/connectors/conn-1/workspace/activate",
+                "/connectors/conn-1/workspace/credentials",
+            }:
+                return {"ok": True}
+            if path == "/connectors/conn-1/tools?refresh=true":
+                return [{"name": "file_ops"}, {"name": "workspace_clear"}]
+            if path == "/agents/agent-123":
+                return {"version": 7, "tools": [{"type": "connector", "connector_id": "conn-1"}]}
+            raise AssertionError((method, path, payload))
+
+    async def run():
+        client = FakeConnectorMistral()
+        result = await client.ensure_default_mcp(
+            "ailinux",
+            "https://api.ailinux.me/v1/mcp",
+        )
+        assert result["tool_count"] == 2
+        assert any(path == "/connectors/conn-1/tools?refresh=true" for _m, path, _p in client.calls)
+
+    asyncio.run(run())
