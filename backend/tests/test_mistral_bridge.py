@@ -88,7 +88,9 @@ def test_workspace_pair_is_rebound_for_followup_turns(monkeypatch):
     assert "workspace_id" in first
     assert code in second
     assert "workspace_status" in second
-    assert "state=suspended" in second
+    assert "state=ready" in second
+    assert "transport_state=online/offline" in second
+    assert "workspace_token" in second
     assert "access_mode" in second
     assert "shared_workspace" in second
     assert second.endswith("zeige die dateien")
@@ -96,6 +98,7 @@ def test_workspace_pair_is_rebound_for_followup_turns(monkeypatch):
 
 def test_workspace_pair_is_scoped_per_chat_and_expires(monkeypatch):
     import app.main as main
+    assert main._WORKSPACE_PAIR_TTL_SECONDS == 15 * 60
     main._workspace_pairs.clear()
     monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
     code = "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF"

@@ -24,7 +24,7 @@ logger = logging.getLogger("mistral.messenger")
 _chat_locks: dict[str, asyncio.Lock] = {}
 _background_tasks: set[asyncio.Task] = set()
 _workspace_pairs: dict[str, tuple[str, float]] = {}
-_WORKSPACE_PAIR_TTL_SECONDS = 2 * 60 * 60
+_WORKSPACE_PAIR_TTL_SECONDS = 15 * 60
 _WORKSPACE_PAIR_RE = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{4}-){5}[0-9A-Fa-f]{4}(?![0-9A-Fa-f])")
 
 settings: Settings
@@ -106,16 +106,17 @@ def _mcp_hardened_prompt(chat_id: str, prompt: str) -> str:
         return prompt
     return (
         "[Internal TriForce local-workspace continuity instruction: MCP transport sessions may be recreated between turns, "
-        "but the browser workspace lease is independent and reconnectable. Before a TriForce local workspace operation, "
-        "call workspace_status with workspace_id "
+        "but the logical TriForce workspace lease is persistent and independent of the browser executor transport. Bootstrap this "
+        "conversation by calling workspace_status with workspace_id "
         + code
-        + " in the current MCP transport so this transport is authorized for the existing lease. "
-        "Interpret workspace state separately from access mode: state=connected means the browser WebSocket is live; "
-        "state=suspended means the lease is still valid but the browser transport is temporarily offline; access_mode is "
-        "read_only or write and must not change merely because of reconnect/session churn. If suspended, do not request a "
-        "new ID; explain/retry after the browser reconnects with the same lease. Then continue the requested operation when connected. "
-        "Do not include the workspace ID in the assistant response. The Mistral connector visibility value shared_workspace is "
-        "a connector scope and is unrelated to the TriForce local workspace state/access mode.]\n\n"
+        + ". On success, preserve the returned workspace_token in conversation/tool context and use workspace_token on later "
+        "workspace calls instead of reusing the human pairing ID. The pairing ID is short-lived bootstrap authorization only. "
+        "Interpret state=ready as the persistent logical lease. connected=true refers to that logical lease. Treat "
+        "transport_state=online/offline and executor_online=true/false as the browser executor state. An offline executor does not "
+        "invalidate the lease and must never trigger a new pairing request; report/retry after the browser resumes. access_mode is "
+        "read_only or write and must not change because of MCP/session/transport churn. Do not expose the pairing ID or workspace_token "
+        "in assistant output. The Mistral connector visibility value shared_workspace is connector scope only and is unrelated to "
+        "TriForce workspace lease or access state.]\n\n"
         + prompt
     )
 

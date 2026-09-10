@@ -371,17 +371,20 @@ class MistralClient:
         )
         connector_prompt = (
             "Use this connector for AILinux, TriForce, coding and local workspace tasks. Keep four concepts separate: "
-            "(1) the Mistral MCP transport session, which may be recreated; (2) the TriForce browser workspace lease, which "
-            "survives transport churn for its reconnect TTL; (3) the browser WebSocket state, connected or suspended; and "
-            "(4) the local access mode, read_only or write, which must remain unchanged across reconnects. When an internal "
-            "continuity instruction supplies a workspace ID, call workspace_status with workspace_id set to it so the current "
-            "MCP transport joins that lease. If workspace_status reports state=suspended, the lease is still paired: do not ask "
-            "for a new ID; wait for or request reopening of the browser workspace page, then retry. Only state=unpaired/expired "
-            "requires a new pairing ID. Never expose or repeat the pairing ID. The Mistral connector visibility value "
-            "shared_workspace refers only to Mistral connector scope and is unrelated to TriForce local workspace access/state. "
-            "Without an active ID, explain that the user must open https://api.ailinux.me/v1/mcp, choose a folder and access "
-            "mode, connect it, and provide the pairing ID."
+            "(1) the Mistral MCP transport session, which may be recreated; (2) the persistent TriForce logical workspace lease; "
+            "(3) the browser executor transport, reported as transport_state=online/offline and executor_online=true/false; and "
+            "(4) the local access mode, read_only or write. When an internal continuity instruction supplies a workspace ID, call "
+            "workspace_status with workspace_id exactly once as bootstrap. Preserve the returned workspace_token in conversation/tool "
+            "context and use workspace_token for later local workspace calls. Never keep reusing the human pairing ID: it is short-lived. "
+            "state=ready and connected=true describe the logical lease and remain stable while the browser executor is offline. "
+            "WORKSPACE_TRANSPORT_OFFLINE or transport_state=offline does not invalidate the lease and must not request a new ID; ask the "
+            "user to resume the browser executor and retry with the same workspace_token. Only state=unpaired/expired or an invalid "
+            "workspace token requires a new pairing ID. Never expose or repeat either pairing ID or workspace_token. The Mistral connector "
+            "visibility value shared_workspace is connector scope only and is unrelated to TriForce workspace lease/access state. "
+            "Without any active workspace context, explain that the user must open https://api.ailinux.me/v1/mcp, choose a folder and "
+            "access mode, connect it, and provide the pairing ID."
         )
+
 
         if connector is None:
             connector = await self._request(
