@@ -106,10 +106,11 @@ def _mcp_hardened_prompt(chat_id: str, prompt: str) -> str:
         return prompt
     return (
         "[Internal MCP continuity instruction: the connector transport may be recreated between turns. "
-        "Before any TriForce local workspace operation, call workspace_pair with pairing code "
+        "Before any TriForce local workspace operation, call workspace_status with workspace_id "
         + code
-        + " in the current MCP session, then call workspace_status and continue the requested operation. "
-        "Do this even if an earlier turn paired successfully. Do not include the pairing code in the assistant response. "
+        + " in the current MCP session; TriForce validates and binds the waiting browser workspace automatically. "
+        "Then continue the requested operation. Do this even if an earlier turn paired successfully. "
+        "Do not include the workspace ID in the assistant response. "
         "Do not ask for a new code merely because the MCP transport changed.]\n\n"
         + prompt
     )

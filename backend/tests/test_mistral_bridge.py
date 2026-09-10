@@ -84,9 +84,10 @@ def test_workspace_pair_is_rebound_for_followup_turns(monkeypatch):
     first = main._mcp_hardened_prompt("42", f"connect {code}")
     second = main._mcp_hardened_prompt("42", "zeige die dateien")
     assert code in first
-    assert "workspace_pair" in first
+    assert "workspace_status" in first
+    assert "workspace_id" in first
     assert code in second
-    assert "workspace_pair" in second
+    assert "workspace_status" in second
     assert second.endswith("zeige die dateien")
 
 

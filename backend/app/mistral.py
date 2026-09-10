@@ -367,15 +367,15 @@ class MistralClient:
 
         description = (
             "Default AILinux TriForce MCP for Nova Telegram. Provides AILinux/TriForce tools "
-            "and browser-based local workspace pairing through workspace_status/workspace_pair."
+            "and browser-based local workspace auto-pairing through workspace_status."
         )
         connector_prompt = (
             "Use this connector for AILinux, TriForce, coding and local workspace tasks. "
             "MCP transport sessions may be short-lived and recreated between turns. A browser pairing ID "
             "represents a longer-lived TriForce workspace lease, not one transport session. When an internal "
-            "continuity instruction supplies a pairing ID, call workspace_pair with it in the current MCP session "
-            "before local workspace tools, then call workspace_status and continue. Do this even if an earlier "
-            "turn paired successfully. Never expose or repeat the pairing ID in the assistant response and do not "
+            "continuity instruction supplies a workspace ID, call workspace_status with workspace_id set to it in the current "
+            "MCP session before local workspace tools; TriForce will validate and bind the waiting browser automatically. "
+            "Do this even if an earlier turn paired successfully. Never expose or repeat the pairing ID in the assistant response and do not "
             "ask for a new ID merely because the transport changed. Without an active ID, explain that the user "
             "must open https://api.ailinux.me/v1/mcp, choose a folder, connect it, and provide the pairing ID."
         )
