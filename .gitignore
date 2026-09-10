@@ -1,0 +1,14 @@
+backend/.env
+backend/*.sqlite3
+backend/__pycache__/
+backend/app/__pycache__/
+backend/*.bak-*
+backend/app/*.bak-*
+*.bak-*
+telegram.txt
+client/.dart_tool/
+client/build/
+client/.flutter-plugins*
+*.iml
+.idea/
+.vscode/

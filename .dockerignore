@@ -1,0 +1,11 @@
+.git
+.gitignore
+client
+scripts
+backend/.env
+backend/*.sqlite3
+backend/__pycache__
+backend/app/__pycache__
+backend/*.bak-*
+backend/app/*.bak-*
+telegram.txt

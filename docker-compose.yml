@@ -1,0 +1,12 @@
+services:
+  mistral-messenger:
+    build: ./backend
+    image: mistral-messenger-assistant:1.0.0-beta1
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - mistral_messenger_data:/app/data
+
+volumes:
+  mistral_messenger_data:
