@@ -1,4 +1,7 @@
 from functools import lru_cache
+import os
+from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .defaults import (
@@ -7,6 +10,15 @@ from .defaults import (
     DEFAULT_AGENT_MODEL,
     DEFAULT_AGENT_NAME,
 )
+
+
+def _default_database_path() -> str:
+    """Use the persistent Docker volume when available, otherwise user data."""
+    container_data = Path("/app/data")
+    if container_data.is_dir() and os.access(container_data, os.W_OK):
+        return str(container_data / "mistral_messenger.sqlite3")
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    return str(data_home / "mistral-messenger-assistant" / "mistral_messenger.sqlite3")
 
 
 class Settings(BaseSettings):
@@ -19,7 +31,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    database_path: str = "/app/data/mistral_messenger.sqlite3"
+    database_path: str = Field(default_factory=_default_database_path)
 
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""

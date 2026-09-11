@@ -161,3 +161,10 @@ def test_ensure_default_mcp_refreshes_connector_tools():
         assert any(path == "/connectors/conn-1/tools?refresh=true" for _m, path, _p in client.calls)
 
     asyncio.run(run())
+
+
+def test_default_database_path_is_writable_outside_container(monkeypatch, tmp_path):
+    from app import config
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(config.os, "access", lambda *_: False)
+    assert config._default_database_path() == str(tmp_path / "mistral-messenger-assistant" / "mistral_messenger.sqlite3")
