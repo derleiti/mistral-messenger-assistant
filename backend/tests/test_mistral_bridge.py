@@ -225,3 +225,37 @@ def test_connector_workspace_bearer_is_sent_as_static_discovery_header():
         assert not any(path.endswith("/workspace/credentials") or path.endswith("/user/credentials") for _m, path, _p in client.calls)
 
     asyncio.run(run())
+
+
+def test_workspace_handoff_preserves_pair_failure_detail():
+    from app.workspace_handoff import WorkspaceHandoffClient
+
+    result = {
+        "content": [{"type": "text", "text": "Could not connect browser workspace: Invalid or expired workspace pairing code"}],
+        "structuredContent": {
+            "ok": False,
+            "code": "WORKSPACE_PAIR_FAILED",
+            "detail": "Invalid or expired workspace pairing code",
+        },
+    }
+    try:
+        WorkspaceHandoffClient._lease_from_tool_result(result, require_token=True)
+    except RuntimeError as exc:
+        assert str(exc) == "WORKSPACE_PAIR_FAILED: Invalid or expired workspace pairing code"
+    else:
+        raise AssertionError("workspace handoff must surface pairing failure detail")
+
+
+def test_workspace_handoff_uses_text_fallback_for_pair_failure_detail():
+    from app.workspace_handoff import WorkspaceHandoffClient
+
+    result = {
+        "content": [{"type": "text", "text": "Browser executor has not connected yet"}],
+        "structuredContent": {"ok": False, "code": "WORKSPACE_PAIR_FAILED"},
+    }
+    try:
+        WorkspaceHandoffClient._lease_from_tool_result(result, require_token=True)
+    except RuntimeError as exc:
+        assert str(exc) == "WORKSPACE_PAIR_FAILED: Browser executor has not connected yet"
+    else:
+        raise AssertionError("workspace handoff must surface text fallback detail")

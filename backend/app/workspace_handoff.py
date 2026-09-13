@@ -99,7 +99,15 @@ class WorkspaceHandoffClient:
             structured = {}
         if not structured.get("ok"):
             code = str(structured.get("code") or "WORKSPACE_CLAIM_FAILED")
-            raise RuntimeError(code)
+            detail = str(structured.get("detail") or structured.get("message") or "").strip()
+            if not detail:
+                content = result.get("content")
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text" and str(item.get("text") or "").strip():
+                            detail = str(item["text"]).strip()
+                            break
+            raise RuntimeError(f"{code}: {detail}" if detail else code)
         token = str(structured.get("workspace_token") or "")
         if require_token and not token:
             raise RuntimeError("TriForce workspace claim returned no durable token")
