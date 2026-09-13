@@ -368,7 +368,7 @@ class MistralClient:
 
         description = (
             "Default AILinux TriForce MCP for Nova Telegram. Provides AILinux/TriForce tools "
-            "and browser-based local workspace auto-pairing through workspace_status."
+            "and AILinux Helper/browser local workspace pairing through workspace_status."
         )
         connector_prompt = (
             "Use this connector for AILinux, TriForce, coding and local workspace tasks. Keep five concepts separate: "
@@ -384,7 +384,7 @@ class MistralClient:
             "user to resume the browser executor and retry with the same workspace_context. Only state=unpaired/expired requires a new "
             "pairing ID. Never expose or repeat credentials. The Mistral connector "
             "visibility value shared_workspace is connector scope only and is unrelated to TriForce workspace lease/access state. "
-            "Without any active workspace context, explain that the user must open https://api.ailinux.me/v1/mcp, choose a folder and "
+            "Without any active workspace context, explain that the user must open the AILinux Helper at https://api.ailinux.me/v1/mcp, choose a folder and "
             "access mode, connect it, and provide the pairing ID."
         )
 
