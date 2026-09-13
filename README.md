@@ -1,70 +1,56 @@
 # Mistral Messenger Assistant
 
-A small standalone Telegram assistant powered only by the Mistral API.
+[![CI](https://github.com/derleiti/mistral-messenger-assistant/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/derleiti/mistral-messenger-assistant/actions/workflows/ci.yml)
+
+Standalone Telegram assistant powered by Mistral with optional MCP workspace handoff.
 
 ## Capabilities
 
 - persistent Mistral Agent conversations
-- text chat
-- image/screenshot analysis with Mistral Vision
-- PDF/DOC/DOCX/PPT/PPTX/ODT/RTF/EPUB processing with Mistral OCR
-- text, Markdown, JSON, logs, CSV and source-code files
-- Telegram voice/audio transcription with Voxtral
+- text and vision chat
+- OCR/document handling for PDF/Office/text-oriented uploads
+- Voxtral audio/voice transcription
 - optional Mistral web search
-- optional MCP connector support
-- owner pairing and allowlisted group support
-- first-run setup API and web page
+- owner pairing and allow-listed groups
+- first-run web setup
+- optional MCP connector and AILinux workspace handoff
+- detailed propagation of workspace pairing failures for diagnosable reconnect flows
 
-TriForce, OpenRouter and other AI providers are not required.
+TriForce is optional for ordinary Telegram/Mistral operation; it is used only when the MCP integration is enabled.
 
-## First run
+## Run
 
 ```bash
 docker compose up -d --build
 ```
 
-Open:
-
-```text
-http://YOUR_SERVER:8080/setup
-```
-
-Enter a Mistral API key and Telegram Bot token. You can either provide an existing Mistral Agent ID or leave it blank and let the assistant create and configure an Agent through the Mistral API.
-
-For Telegram webhooks, expose the service through HTTPS and enter the public base URL in setup.
-
-## Empty image / persistent setup
-
-The published Docker image contains no API keys, Telegram token or Agent ID. Runtime configuration is stored in the Docker volume under `/app/data`. Rebuilding or replacing the container keeps the configuration.
-
-Environment variables remain supported for immutable deployments, but the default Compose file deliberately does not load `.env`.
+Then open `http://YOUR_SERVER:8080/setup` and configure the Telegram Bot token plus Mistral credentials. Runtime secrets are stored outside the image in the application data volume; the default Compose deployment does not bake credentials into the container.
 
 ## API
 
-- `GET /setup/status` - safe first-run status
-- `GET /setup` - minimal setup UI
-- `POST /setup/configure` - validate Telegram/Mistral and create or attach an Agent
-- `GET /health` - health and capabilities
-- `POST /admin/pair` - create owner pairing link (admin token required)
-- `POST /admin/chat` - direct Agent test (admin token required)
-- `GET /admin/settings` - redacted runtime settings (admin token required)
-- `POST /telegram/webhook` - Telegram webhook
+- `GET /health`
+- `GET /setup` and `GET /setup/status`
+- `POST /setup/configure`
+- `POST /admin/pair`
+- `POST /admin/chat`
+- `GET /admin/settings` (redacted)
+- `POST /telegram/webhook`
 
-After setup is complete, reconfiguration requires the admin token.
+## Development
 
-## Optional MCP
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r backend/requirements-dev.txt
+cd backend
+PYTHONPATH=. ../.venv/bin/pytest -q tests
+```
 
-MCP is disabled by default. Set it during setup only when desired. A normal installation needs only Mistral and Telegram.
+CI also builds the backend Docker image.
 
-## Telegram commands
+## Security
 
-- `/new` or `/restart` - start a new Mistral conversation
-- `/status` - show basic assistant status
+No credentials are shipped in the image; webhook requests use a configured secret; uploaded files are bounded; transient OCR uploads are cleaned up; admin reconfiguration requires the admin token after setup.
 
-## Security notes
+## License
 
-- no credentials are shipped in the image
-- secret values are not returned by `/admin/settings`
-- setup becomes admin-token protected once configured
-- Telegram webhook requests require the configured webhook secret
-- uploaded files are size-limited and transient Mistral OCR uploads are deleted after processing
+AILinux-authored source is covered by the AILinux Proprietary Source License. Third-party libraries/services retain their own terms.
