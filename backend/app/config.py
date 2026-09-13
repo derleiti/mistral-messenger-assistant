@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     mistral_mcp_server: str = ""
     mistral_mcp_visibility: str = "shared_workspace"
     mistral_mcp_credentials_name: str = "default"
+    triforce_mcp_auth_token: str = ""
 
 
 PERSISTED_FIELDS = {
@@ -77,6 +78,7 @@ SECRET_FIELDS = {
     "telegram_webhook_secret",
     "admin_token",
     "mistral_api_key",
+    "triforce_mcp_auth_token",
 }
 
 

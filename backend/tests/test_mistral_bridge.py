@@ -80,13 +80,14 @@ def test_database_workspace_lease_roundtrip():
     with tempfile.TemporaryDirectory() as td:
         db = Database(str(Path(td) / "bridge.sqlite3"))
         assert db.get_workspace_lease("42") is None
-        db.set_workspace_lease("42", "secret-token", "lease-1", "write", ["file_read", "code_edit"])
+        db.set_workspace_lease("42", "secret-token", "lease-1", "write", ["file_read", "code_edit"], workspace_context="tgctx-test")
         lease = db.get_workspace_lease("42")
         assert lease is not None
         assert lease["workspace_token"] == "secret-token"
         assert lease["lease_id"] == "lease-1"
         assert lease["access_mode"] == "write"
         assert lease["capabilities"] == ["file_read", "code_edit"]
+        assert lease["workspace_context"] == "tgctx-test"
         db.clear_workspace_lease("42")
         assert db.get_workspace_lease("42") is None
 
@@ -94,6 +95,7 @@ def test_database_workspace_lease_roundtrip():
 def test_workspace_prompt_uses_verified_persistent_token(monkeypatch):
     import app.main as main
     monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "triforce_mcp_auth_token", "")
     workspace = {
         "workspace_token": "durable-secret",
         "lease_id": "lease-x",
@@ -104,7 +106,7 @@ def test_workspace_prompt_uses_verified_persistent_token(monkeypatch):
     }
     prompt = main._mcp_hardened_prompt("zeige die dateien", workspace)
     assert "durable-secret" in prompt
-    assert "Do not ask for a pairing ID" in prompt
+    assert "workspace_token" in prompt
     assert "state=ready" in prompt
     assert "access_mode=write" in prompt
     assert "transport_state=offline" in prompt
@@ -168,3 +170,58 @@ def test_default_database_path_is_writable_outside_container(monkeypatch, tmp_pa
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(config.os, "access", lambda *_: False)
     assert config._default_database_path() == str(tmp_path / "mistral-messenger-assistant" / "mistral_messenger.sqlite3")
+
+
+def test_authenticated_workspace_prompt_uses_context_not_resume_secret(monkeypatch):
+    import app.main as main
+    monkeypatch.setattr(main.settings, "mistral_mcp_enabled", True)
+    monkeypatch.setattr(main.settings, "triforce_mcp_auth_token", "bridge-bearer")
+    workspace = {
+        "workspace_token": "must-never-reach-model",
+        "workspace_context": "tgctx-owner-42",
+        "lease_id": "lease-x",
+        "access_mode": "write",
+        "capabilities": ["file_read", "code_edit"],
+        "state": "ready",
+        "transport_state": "offline",
+    }
+    prompt = main._mcp_hardened_prompt("zeige die dateien", workspace)
+    assert "workspace_context=tgctx-owner-42" in prompt
+    assert "must-never-reach-model" not in prompt
+    assert "workspace_token/resume credentials" in prompt
+    assert prompt.endswith("zeige die dateien")
+
+
+def test_connector_workspace_bearer_is_sent_as_static_discovery_header():
+    class Fake(MistralClient):
+        def __init__(self):
+            super().__init__("api", "agent")
+            self.calls = []
+
+        async def _request(self, method, path, payload=None):
+            self.calls.append((method, path, payload))
+            if path == "/connectors?page_size=100":
+                return {"items": []}
+            if method == "POST" and path == "/connectors":
+                return {"id": "conn-1", "name": "ailinux", "server": "https://api.ailinux.me/v1/mcp/service", "description": "old"}
+            if path == "/connectors/conn-1":
+                return {"id": "conn-1", "name": "ailinux", "server": "https://api.ailinux.me/v1/mcp/service"}
+            if path == "/connectors/conn-1/workspace/activate":
+                return {"ok": True}
+            if path == "/connectors/conn-1/tools?refresh=true":
+                return []
+            if path == "/agents/agent":
+                return {"tools": [{"type": "connector", "connector_id": "conn-1"}], "version": 1}
+            return {"ok": True}
+
+    async def run():
+        client = Fake()
+        await client.ensure_default_mcp(
+            "ailinux", "https://api.ailinux.me/v1/mcp/service", bearer_token="secret-bridge-token"
+        )
+        create_calls = [payload for method, path, payload in client.calls if method == "POST" and path == "/connectors"]
+        assert create_calls
+        assert create_calls[-1]["headers"] == {"Authorization": "Bearer secret-bridge-token"}
+        assert not any(path.endswith("/workspace/credentials") or path.endswith("/user/credentials") for _m, path, _p in client.calls)
+
+    asyncio.run(run())

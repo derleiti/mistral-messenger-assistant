@@ -55,7 +55,9 @@ def _reload_clients() -> None:
     )
     tg = TelegramClient(settings.telegram_bot_token)
     global workspace_handoff
-    workspace_handoff = WorkspaceHandoffClient(settings.mistral_mcp_server or "")
+    workspace_handoff = WorkspaceHandoffClient(
+        settings.mistral_mcp_server or "", settings.triforce_mcp_auth_token
+    )
     default_mcp_status = {"enabled": settings.mistral_mcp_enabled, "ok": False}
 
 
@@ -84,15 +86,24 @@ def _exc_text(exc: Exception) -> str:
 
 
 async def _resolve_workspace_context(chat_id: str, prompt: str) -> dict[str, Any] | None:
+    saved = db.get_workspace_lease(chat_id)
+    workspace_context = str((saved or {}).get("workspace_context") or "").strip()
+    if not workspace_context:
+        # Non-secret selector. Authentication comes from the connector bearer;
+        # this value only isolates Telegram chats behind that one service identity.
+        workspace_context = "tgctx_" + secrets.token_urlsafe(18)
+
     matches = _WORKSPACE_PAIR_RE.findall(str(prompt or ""))
     if matches and settings.mistral_mcp_enabled and settings.mistral_mcp_server:
         code = matches[-1].upper()
-        lease = await workspace_handoff.claim_pair_code(code)
+        lease = await workspace_handoff.claim_pair_code(code, workspace_context)
         db.set_workspace_lease(
-            chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities), lease.mcp_session_id
+            chat_id, lease.workspace_token, lease.lease_id, lease.access_mode,
+            list(lease.capabilities), lease.mcp_session_id, workspace_context,
         )
         return {
             "workspace_token": lease.workspace_token,
+            "workspace_context": workspace_context,
             "lease_id": lease.lease_id,
             "access_mode": lease.access_mode,
             "capabilities": list(lease.capabilities),
@@ -100,19 +111,24 @@ async def _resolve_workspace_context(chat_id: str, prompt: str) -> dict[str, Any
             "transport_state": lease.transport_state,
         }
 
-    saved = db.get_workspace_lease(chat_id)
     if not saved or not settings.mistral_mcp_enabled or not settings.mistral_mcp_server:
         return None
     try:
-        lease = await workspace_handoff.status(str(saved["workspace_token"]), str(saved.get("mcp_session_id") or ""))
+        lease = await workspace_handoff.status(
+            str(saved["workspace_token"]),
+            str(saved.get("mcp_session_id") or ""),
+            workspace_context,
+        )
     except Exception as exc:
         logger.warning("Stored workspace lease could not be resumed for chat %s: %s", chat_id, exc)
-        return {**saved, "state": "unknown", "transport_state": "offline"}
+        return {**saved, "workspace_context": workspace_context, "state": "unknown", "transport_state": "offline"}
     db.set_workspace_lease(
-        chat_id, lease.workspace_token, lease.lease_id, lease.access_mode, list(lease.capabilities), lease.mcp_session_id
+        chat_id, lease.workspace_token, lease.lease_id, lease.access_mode,
+        list(lease.capabilities), lease.mcp_session_id, workspace_context,
     )
     return {
         "workspace_token": lease.workspace_token,
+        "workspace_context": workspace_context,
         "lease_id": lease.lease_id,
         "access_mode": lease.access_mode,
         "capabilities": list(lease.capabilities),
@@ -124,18 +140,30 @@ async def _resolve_workspace_context(chat_id: str, prompt: str) -> dict[str, Any
 def _mcp_hardened_prompt(prompt: str, workspace: dict[str, Any] | None) -> str:
     if not workspace or not settings.mistral_mcp_enabled:
         return prompt
+    caps = ",".join(str(x) for x in (workspace.get("capabilities") or []))
+    context = str(workspace.get("workspace_context") or "").strip()
+    if settings.triforce_mcp_auth_token and context:
+        return (
+            "[Internal TriForce local-workspace continuity instruction: this Telegram chat has an authenticated persistent "
+            "workspace lease. Include workspace_context=" + context + " in every TriForce local workspace tool call in this turn. "
+            "workspace_context is a non-secret selector; authentication is supplied by the MCP connector credential. Never ask for, "
+            "request, reveal, or invent workspace_token/resume credentials. Logical lease state=" + str(workspace.get("state") or "ready") +
+            ", access_mode=" + str(workspace.get("access_mode") or "read_only") + ", transport_state=" +
+            str(workspace.get("transport_state") or "offline") + ", capabilities=" + caps + ". transport_state=offline means only "
+            "the browser executor is unavailable; the logical lease remains valid and must not be re-paired. shared_workspace is "
+            "Mistral connector scope only.]\n\n" + prompt
+        )
+
+    # Compatibility for deployments not yet provisioned with bridge authentication.
     token = str(workspace.get("workspace_token") or "")
     if not token:
         return prompt
-    caps = ",".join(str(x) for x in (workspace.get("capabilities") or []))
     return (
-        "[Internal TriForce local-workspace continuity instruction: the Telegram bridge already owns a verified persistent "
-        "workspace lease. Do not ask for a pairing ID. Use workspace_token " + token + " for every TriForce local workspace "
-        "tool call in this turn. Logical lease state=" + str(workspace.get("state") or "ready") + ", access_mode=" +
+        "[Internal TriForce local-workspace continuity instruction: the Telegram bridge owns a verified persistent workspace lease. "
+        "Use workspace_token " + token + " for every TriForce local workspace tool call in this turn. Never reveal it in assistant "
+        "output. Logical lease state=" + str(workspace.get("state") or "ready") + ", access_mode=" +
         str(workspace.get("access_mode") or "read_only") + ", transport_state=" + str(workspace.get("transport_state") or "offline") +
-        ", capabilities=" + caps + ". transport_state=offline means only the browser executor is unavailable; the lease remains "
-        "valid and must not be re-paired. Never reveal workspace_token or any pairing credential in assistant output. "
-        "shared_workspace is Mistral connector scope only.]\n\n" + prompt
+        ", capabilities=" + caps + ".]\n\n" + prompt
     )
 
 
@@ -297,6 +325,7 @@ async def _configure_integrations() -> dict[str, Any]:
             settings.mistral_mcp_server,
             settings.mistral_mcp_visibility,
             settings.mistral_mcp_credentials_name,
+            settings.triforce_mcp_auth_token,
         )
         default_mcp_status["enabled"] = True
         result["mcp"] = default_mcp_status
@@ -340,6 +369,7 @@ class SetupRequest(BaseModel):
     agent_enable_image_generation: bool = False
     mistral_mcp_enabled: bool = False
     mistral_mcp_server: str = ""
+    triforce_mcp_auth_token: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -358,10 +388,10 @@ body{font-family:system-ui,sans-serif;background:#111;color:#eee;max-width:760px
 <label>Existing Mistral Agent ID (leave empty to create one)</label><input id='aid'>
 <label>Agent system prompt / instructions (optional; a safe default is used when empty)</label><textarea id='instructions' placeholder='You are a capable personal messenger assistant...'></textarea>
 <label class='check'><input id='web' type='checkbox' checked> Enable Mistral web search on the created Agent</label>
-<label class='check'><input id='mcp' type='checkbox'> Enable optional MCP connector</label><input id='mcpurl' placeholder='https://your-mcp.example.com/mcp'>
+<label class='check'><input id='mcp' type='checkbox'> Enable optional MCP connector</label><input id='mcpurl' placeholder='https://your-mcp.example.com/mcp'><label>TriForce MCP bearer (optional)</label><input id='mcptoken' type='password' autocomplete='off'>
 <label>Admin token (optional; generated automatically when empty)</label><input id='adm' type='password' autocomplete='off'>
 <button onclick='go()'>Configure and test</button><pre id='out'>Ready.</pre>
-<script>async function go(){let out=document.getElementById('out');out.textContent='Configuring...';let body={mistral_api_key:mk.value,telegram_bot_token:tt.value,public_base_url:url.value,admin_token:adm.value,existing_agent_id:aid.value,create_agent:!aid.value,assistant_name:an.value,agent_name:an.value,agent_model:model.value,agent_instructions:instructions.value,agent_enable_web_search:web.checked,mistral_mcp_enabled:mcp.checked,mistral_mcp_server:mcpurl.value};let h={'Content-Type':'application/json'};if(adm.value)h.Authorization='Bearer '+adm.value;let r=await fetch('/setup/configure',{method:'POST',headers:h,body:JSON.stringify(body)});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
+<script>async function go(){let out=document.getElementById('out');out.textContent='Configuring...';let body={mistral_api_key:mk.value,telegram_bot_token:tt.value,public_base_url:url.value,admin_token:adm.value,existing_agent_id:aid.value,create_agent:!aid.value,assistant_name:an.value,agent_name:an.value,agent_model:model.value,agent_instructions:instructions.value,agent_enable_web_search:web.checked,mistral_mcp_enabled:mcp.checked,mistral_mcp_server:mcpurl.value,triforce_mcp_auth_token:mcptoken.value};let h={'Content-Type':'application/json'};if(adm.value)h.Authorization='Bearer '+adm.value;let r=await fetch('/setup/configure',{method:'POST',headers:h,body:JSON.stringify(body)});out.textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>"""
 
 
 async def _workspace_keepalive_loop():
@@ -369,13 +399,15 @@ async def _workspace_keepalive_loop():
         await asyncio.sleep(300)
         for item in db.list_workspace_leases():
             try:
+                context = str(item.get("workspace_context") or "").strip() or ("tgctx_" + secrets.token_urlsafe(18))
                 lease = await workspace_handoff.status(
                     str(item.get("workspace_token") or ""),
                     str(item.get("mcp_session_id") or ""),
+                    context,
                 )
                 db.set_workspace_lease(
                     str(item.get("chat_id") or ""), lease.workspace_token, lease.lease_id,
-                    lease.access_mode, list(lease.capabilities), lease.mcp_session_id,
+                    lease.access_mode, list(lease.capabilities), lease.mcp_session_id, context,
                 )
             except Exception as exc:
                 logger.warning("Workspace keepalive failed for chat %s: %s", item.get("chat_id"), exc)
@@ -477,6 +509,7 @@ async def setup_configure(req: SetupRequest, authorization: str | None = Header(
         "agent_managed": managed,
         "mistral_mcp_enabled": bool(req.mistral_mcp_enabled and req.mistral_mcp_server.strip()),
         "mistral_mcp_server": req.mistral_mcp_server.strip(),
+        "triforce_mcp_auth_token": req.triforce_mcp_auth_token.strip() or settings.triforce_mcp_auth_token,
     }
     db.set_config(values)
     db.clear_all_mistral_conversations()

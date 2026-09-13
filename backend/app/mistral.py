@@ -348,8 +348,9 @@ class MistralClient:
         server: str,
         visibility: str = "shared_workspace",
         credentials_name: str = "default",
+        bearer_token: str = "",
     ) -> dict[str, Any]:
-        """Ensure the default public MCP connector exists, is usable, and is attached to the agent."""
+        """Ensure the TriForce MCP connector, including its stable bridge credential."""
         if not self.configured:
             raise RuntimeError("Mistral agent is not fully configured")
 
@@ -370,16 +371,18 @@ class MistralClient:
             "and browser-based local workspace auto-pairing through workspace_status."
         )
         connector_prompt = (
-            "Use this connector for AILinux, TriForce, coding and local workspace tasks. Keep four concepts separate: "
-            "(1) the Mistral MCP transport session, which may be recreated; (2) the persistent TriForce logical workspace lease; "
-            "(3) the browser executor transport, reported as transport_state=online/offline and executor_online=true/false; and "
-            "(4) the local access mode, read_only or write. When an internal continuity instruction supplies a workspace ID, call "
-            "workspace_status with workspace_id exactly once as bootstrap. Preserve the returned workspace_token in conversation/tool "
-            "context and use workspace_token for later local workspace calls. Never keep reusing the human pairing ID: it is short-lived. "
+            "Use this connector for AILinux, TriForce, coding and local workspace tasks. Keep five concepts separate: "
+            "(1) the Mistral MCP transport session, which may be recreated; (2) the authenticated Telegram bridge identity; "
+            "(3) the persistent TriForce logical workspace lease; (4) the browser executor transport, reported as "
+            "transport_state=online/offline and executor_online=true/false; and (5) the local access mode, read_only or write. "
+            "When an internal continuity instruction supplies workspace_context, include that exact non-secret workspace_context in every "
+            "local workspace tool call. The connector credential, not the model prompt, owns the durable workspace authentication. "
+            "If a one-time workspace ID is also supplied, call workspace_status once with workspace_id and workspace_context to bootstrap. "
+            "Never request, expose, repeat, or invent workspace_token/resume credentials. Never keep reusing the human pairing ID. "
             "For local workspace operations, never issue dependent tool calls in parallel. In particular, after create/write/delete, wait for that tool result before reading, searching, grepping, or deleting the same path. Independent read-only calls may be parallel, but mutations and any dependent reads must be sequential. state=ready and connected=true describe the logical lease and remain stable while the browser executor is offline. "
             "WORKSPACE_TRANSPORT_OFFLINE or transport_state=offline does not invalidate the lease and must not request a new ID; ask the "
-            "user to resume the browser executor and retry with the same workspace_token. Only state=unpaired/expired or an invalid "
-            "workspace token requires a new pairing ID. Never expose or repeat either pairing ID or workspace_token. The Mistral connector "
+            "user to resume the browser executor and retry with the same workspace_context. Only state=unpaired/expired requires a new "
+            "pairing ID. Never expose or repeat credentials. The Mistral connector "
             "visibility value shared_workspace is connector scope only and is unrelated to TriForce workspace lease/access state. "
             "Without any active workspace context, explain that the user must open https://api.ailinux.me/v1/mcp, choose a folder and "
             "access mode, connect it, and provide the pairing ID."
@@ -387,16 +390,19 @@ class MistralClient:
 
 
         if connector is None:
-            connector = await self._request(
-                "POST",
-                "/connectors",
-                {
-                    "name": name,
-                    "description": description,
-                    "server": server,
-                    "visibility": visibility,
-                },
-            )
+            create_payload = {
+                "name": name,
+                "description": description,
+                "server": server,
+                "visibility": visibility,
+            }
+            # For a service bridge, send the static Authorization header during
+            # connector discovery itself. Mistral otherwise follows TriForce's
+            # public OAuth metadata and misclassifies this machine credential as
+            # an interactive OAuth2 connection.
+            if bearer_token:
+                create_payload["headers"] = {"Authorization": f"Bearer {bearer_token}"}
+            connector = await self._request("POST", "/connectors", create_payload)
 
         connector_id = str(connector.get("id") or "")
         if not connector_id:
@@ -426,16 +432,17 @@ class MistralClient:
 
         if visibility == "shared_workspace":
             await self._request("POST", f"/connectors/{connector_id}/workspace/activate", {})
-            await self._request(
-                "POST",
-                f"/connectors/{connector_id}/workspace/credentials",
-                {
-                    "name": credentials_name,
-                    "credentials": {"headers": {}},
-                    "is_default": True,
-                },
-            )
-        else:
+            if not bearer_token:
+                await self._request(
+                    "POST",
+                    f"/connectors/{connector_id}/workspace/credentials",
+                    {
+                        "name": credentials_name,
+                        "credentials": {"headers": {}},
+                        "is_default": True,
+                    },
+                )
+        elif not bearer_token:
             await self._request(
                 "POST",
                 f"/connectors/{connector_id}/user/credentials",
@@ -452,25 +459,36 @@ class MistralClient:
 
         agent = await self._request("GET", f"/agents/{self.agent_id}")
         current_tools = agent.get("tools") or []
+        # Keep exactly one TriForce MCP connector on this bot agent. Historical
+        # anonymous /v1/mcp or /v1/mcp/sse connectors must not compete with the
+        # authenticated service connector for workspace calls.
+        triforce_connector_ids = {
+            str(item.get("id") or "")
+            for item in items
+            if isinstance(item, dict)
+            and str(item.get("server") or "").startswith("https://api.ailinux.me/v1/mcp")
+        }
+        cleaned_tools = [
+            tool for tool in current_tools
+            if not (
+                isinstance(tool, dict)
+                and tool.get("type") == "connector"
+                and str(tool.get("connector_id") or "") in triforce_connector_ids
+                and str(tool.get("connector_id") or "") != connector_id
+            )
+        ]
         attached = any(
             isinstance(tool, dict)
             and tool.get("type") == "connector"
-            and str(tool.get("connector_id") or "") in {connector_id, name}
-            for tool in current_tools
+            and str(tool.get("connector_id") or "") == connector_id
+            for tool in cleaned_tools
         )
-        if not attached:
-            current_tools = [
-                tool for tool in current_tools
-                if not (
-                    isinstance(tool, dict)
-                    and tool.get("type") == "connector"
-                    and str(tool.get("connector_id") or "") == name
-                )
-            ]
+        desired_tools = cleaned_tools if attached else [*cleaned_tools, {"type": "connector", "connector_id": connector_id}]
+        if desired_tools != current_tools:
             agent = await self._request(
                 "PATCH",
                 f"/agents/{self.agent_id}",
-                {"tools": [*current_tools, {"type": "connector", "connector_id": connector_id}]},
+                {"tools": desired_tools},
             )
 
         return {

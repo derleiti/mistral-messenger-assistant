@@ -16,6 +16,7 @@ class WorkspaceLease:
     state: str
     transport_state: str
     mcp_session_id: str = ""
+    workspace_context: str = ""
 
 
 class WorkspaceHandoffClient:
@@ -25,8 +26,9 @@ class WorkspaceHandoffClient:
     The bridge claims the lease itself and persists the durable workspace token.
     """
 
-    def __init__(self, server_url: str, timeout: float = 20.0):
+    def __init__(self, server_url: str, auth_token: str = "", timeout: float = 20.0):
         self.server_url = str(server_url or "").rstrip("/")
+        self.auth_token = str(auth_token or "").strip()
         self.timeout = timeout
 
     @staticmethod
@@ -58,6 +60,8 @@ class WorkspaceHandoffClient:
             "MCP-Protocol-Version": "2025-03-26",
             "User-Agent": "nova-telegram-bridge/workspace-handoff",
         }
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
         if session_id:
             headers["Mcp-Session-Id"] = session_id
         body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
@@ -87,7 +91,9 @@ class WorkspaceHandoffClient:
         return session_id
 
     @staticmethod
-    def _lease_from_tool_result(result: dict[str, Any], *, require_token: bool, session_id: str = "") -> WorkspaceLease:
+    def _lease_from_tool_result(
+        result: dict[str, Any], *, require_token: bool, session_id: str = "", workspace_context: str = ""
+    ) -> WorkspaceLease:
         structured = result.get("structuredContent")
         if not isinstance(structured, dict):
             structured = {}
@@ -105,37 +111,53 @@ class WorkspaceHandoffClient:
             state=str(structured.get("state") or "ready"),
             transport_state=str(structured.get("transport_state") or "offline"),
             mcp_session_id=session_id,
+            workspace_context=workspace_context,
         )
 
-    async def claim_pair_code(self, pair_code: str) -> WorkspaceLease:
+    async def claim_pair_code(self, pair_code: str, workspace_context: str = "") -> WorkspaceLease:
         session_id = await self._initialize()
         result, _ = await self._rpc(
             "tools/call",
-            {"name": "workspace_status", "arguments": {"workspace_id": str(pair_code).strip().upper()}},
+            {"name": "workspace_status", "arguments": {
+                "workspace_id": str(pair_code).strip().upper(),
+                "workspace_context": str(workspace_context or ""),
+            }},
             session_id=session_id,
         )
-        return self._lease_from_tool_result(result, require_token=True, session_id=session_id)
+        return self._lease_from_tool_result(
+            result, require_token=True, session_id=session_id, workspace_context=workspace_context
+        )
 
-    async def status(self, workspace_token: str, session_id: str = "") -> WorkspaceLease:
+    async def status(self, workspace_token: str, session_id: str = "", workspace_context: str = "") -> WorkspaceLease:
         active_session = session_id
         if active_session:
             try:
                 result, _ = await self._rpc(
                     "tools/call",
-                    {"name": "workspace_status", "arguments": {"workspace_token": workspace_token}},
+                    {"name": "workspace_status", "arguments": {
+                        "workspace_token": workspace_token,
+                        "workspace_context": str(workspace_context or ""),
+                    }},
                     session_id=active_session,
                 )
-                lease = self._lease_from_tool_result(result, require_token=False, session_id=active_session)
+                lease = self._lease_from_tool_result(
+                    result, require_token=False, session_id=active_session, workspace_context=workspace_context
+                )
             except Exception:
                 active_session = ""
         if not active_session:
             active_session = await self._initialize()
             result, _ = await self._rpc(
                 "tools/call",
-                {"name": "workspace_status", "arguments": {"workspace_token": workspace_token}},
+                {"name": "workspace_status", "arguments": {
+                    "workspace_token": workspace_token,
+                    "workspace_context": str(workspace_context or ""),
+                }},
                 session_id=active_session,
             )
-            lease = self._lease_from_tool_result(result, require_token=False, session_id=active_session)
+            lease = self._lease_from_tool_result(
+                result, require_token=False, session_id=active_session, workspace_context=workspace_context
+            )
         if not lease.workspace_token:
             lease = WorkspaceLease(
                 workspace_token=workspace_token,
@@ -145,5 +167,6 @@ class WorkspaceHandoffClient:
                 state=lease.state,
                 transport_state=lease.transport_state,
                 mcp_session_id=active_session,
+                workspace_context=workspace_context,
             )
         return lease
