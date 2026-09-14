@@ -12,3 +12,11 @@ client/.flutter-plugins*
 *.iml
 .idea/
 .vscode/
+
+.backups/
+
+.workspacebackup/
+
+__pycache__/
+
+*.py[cod]
